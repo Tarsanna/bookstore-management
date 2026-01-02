@@ -1,0 +1,7 @@
+{
+  "name": "白读仪表盘",
+  "description": "一个为书店设计的全面经营管理工具，支持小程序订单解析、支付对账、采购OCR识别及成本收益仪表盘。",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}

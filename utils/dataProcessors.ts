@@ -98,7 +98,7 @@ export const parseOrderExcel = (file: File): Promise<OrderRecord[]> => {
             category: mapCategory(rawCategory, productName),
             productName
           };
-        }).filter((r): r is OrderRecord => r !== null && r.price > 0);
+        }).filter((r): r is OrderRecord => r !== null && (r.price > 0 || r.category === 'drink'));
 
         resolve(records);
       } catch (err) {
@@ -219,7 +219,8 @@ export const aggregateDailySummary = (orders: OrderRecord[], payments: PaymentRe
     alipayTotal: 0,
     youTotal: 0,
     reconciled: false,
-    categories: { book: 0, drink: 0, alcohol: 0, event: 0, membership: 0 }
+    categories: { book: 0, drink: 0, alcohol: 0, event: 0, membership: 0 },
+    drinkCount: 0
   });
 
   orders.forEach(order => {
@@ -227,6 +228,9 @@ export const aggregateDailySummary = (orders: OrderRecord[], payments: PaymentRe
     if (!summaryMap[d]) summaryMap[d] = initDay(d);
     summaryMap[d].orderTotal += order.price;
     summaryMap[d].categories[order.category] = (summaryMap[d].categories[order.category] || 0) + order.price;
+    if (order.category === 'drink') {
+      summaryMap[d].drinkCount += 1;
+    }
   });
 
   payments.forEach(payment => {

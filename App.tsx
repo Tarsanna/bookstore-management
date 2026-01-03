@@ -28,7 +28,8 @@ import {
   Edit2,
   Check,
   X,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Coffee
 } from 'lucide-react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend 
@@ -108,6 +109,7 @@ const App: React.FC = () => {
       alcohol: d.categories.alcohol || 0,
       membership: d.categories.membership || 0,
       event: d.categories.event || 0,
+      drinkCount: d.drinkCount || 0,
       total: (d.categories.book || 0) + (d.categories.drink || 0) + (d.categories.alcohol || 0) + (d.categories.membership || 0) + (d.categories.event || 0)
     }));
   }, [dailySummary]);
@@ -476,6 +478,7 @@ const App: React.FC = () => {
                           <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">日期</th>
                           <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-indigo-600 text-right">书</th>
                           <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-amber-600 text-right">饮品</th>
+                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-blue-400 text-center">今日出杯</th>
                           <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-emerald-600 text-right">酒精</th>
                           <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-rose-600 text-right">会籍</th>
                           <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 text-right">活动/其他</th>
@@ -488,6 +491,11 @@ const App: React.FC = () => {
                             <td className="px-6 py-4 text-sm font-bold text-slate-700">{row.date}</td>
                             <td className="px-6 py-4 text-right font-black text-indigo-500 tabular-nums">¥{row.book.toLocaleString(undefined, {minimumFractionDigits: 1})}</td>
                             <td className="px-6 py-4 text-right font-black text-amber-500 tabular-nums">¥{row.drink.toLocaleString(undefined, {minimumFractionDigits: 1})}</td>
+                            <td className="px-6 py-4 text-center">
+                               <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 text-blue-600 rounded-lg text-xs font-black">
+                                 <Coffee className="w-3 h-3" /> {row.drinkCount} 杯
+                               </div>
+                            </td>
                             <td className="px-6 py-4 text-right font-black text-emerald-500 tabular-nums">¥{row.alcohol.toLocaleString(undefined, {minimumFractionDigits: 1})}</td>
                             <td className="px-6 py-4 text-right font-black text-rose-500 tabular-nums">¥{row.membership.toLocaleString(undefined, {minimumFractionDigits: 1})}</td>
                             <td className="px-6 py-4 text-right font-bold text-slate-400 tabular-nums">¥{row.event.toLocaleString(undefined, {minimumFractionDigits: 1})}</td>

@@ -55,4 +55,5 @@ export interface DailySummary {
   youTotal: number;
   reconciled: boolean;
   categories: Record<OrderCategory, number>;
+  drinkCount: number;
 }

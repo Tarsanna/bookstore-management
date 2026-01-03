@@ -60,5 +60,6 @@ export interface DailySummary {
 
 export interface SyncConfig {
   webhookUrl: string;
+  spreadsheetUrl?: string;
   lastSyncedAt?: string;
 }

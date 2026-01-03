@@ -29,13 +29,19 @@ import {
   Check,
   X,
   FileSpreadsheet,
-  Coffee
+  Coffee,
+  CloudUpload,
+  RefreshCw,
+  Link as LinkIcon,
+  Copy,
+  ExternalLink
 } from 'lucide-react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend 
 } from 'recharts';
-import { OrderRecord, PaymentRecord, PurchaseRecord, FixedCost, DailySummary, MonthlyManualIncome, Shop, OrderCategory } from './types';
+import { OrderRecord, PaymentRecord, PurchaseRecord, FixedCost, DailySummary, MonthlyManualIncome, Shop, OrderCategory, SyncConfig } from './types';
 import { parseOrderExcel, parsePaymentCSV, aggregateDailySummary, parsePurchaseExcel } from './utils/dataProcessors';
+import { syncToGoogleSheet } from './services/googleSheetService';
 
 // Predefined Shops
 const INITIAL_SHOPS: Shop[] = [
@@ -80,12 +86,14 @@ const App: React.FC = () => {
   const [purchases, setPurchases] = useState<PurchaseRecord[]>(() => JSON.parse(localStorage.getItem('bd_purchases') || '[]'));
   const [fixedCosts, setFixedCosts] = useState<FixedCost[]>(() => JSON.parse(localStorage.getItem('bd_fixedCosts') || '[]'));
   const [monthlyIncomes, setMonthlyIncomes] = useState<MonthlyManualIncome[]>(() => JSON.parse(localStorage.getItem('bd_monthlyIncomes') || '[]'));
+  const [syncConfig, setSyncConfig] = useState<SyncConfig>(() => JSON.parse(localStorage.getItem('bd_syncConfig') || '{"webhookUrl":""}'));
   
   // Context for Costs Tab
   const [costFilterShopId, setCostFilterShopId] = useState<string>('hj');
 
   const [loading, setLoading] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
+  const [syncing, setSyncing] = useState(false);
 
   // Editing state for Purchase items
   const [editingPurchaseId, setEditingPurchaseId] = useState<string | null>(null);
@@ -97,6 +105,7 @@ const App: React.FC = () => {
   useEffect(() => { localStorage.setItem('bd_purchases', JSON.stringify(purchases)); }, [purchases]);
   useEffect(() => { localStorage.setItem('bd_fixedCosts', JSON.stringify(fixedCosts)); }, [fixedCosts]);
   useEffect(() => { localStorage.setItem('bd_monthlyIncomes', JSON.stringify(monthlyIncomes)); }, [monthlyIncomes]);
+  useEffect(() => { localStorage.setItem('bd_syncConfig', JSON.stringify(syncConfig)); }, [syncConfig]);
 
   // Global Derived Data
   const dailySummary = useMemo(() => aggregateDailySummary(orders, payments), [orders, payments]);
@@ -114,67 +123,26 @@ const App: React.FC = () => {
     }));
   }, [dailySummary]);
 
-  // 月度分类占比数据
   const monthlyProportionData = useMemo(() => {
     const months: Record<string, { total: number; categories: Record<OrderCategory, number> }> = {};
-    
     orders.forEach(order => {
-      const month = order.date.substring(0, 7); // YYYY-MM
+      const month = order.date.substring(0, 7);
       if (!months[month]) {
-        months[month] = { 
-          total: 0, 
-          categories: { book: 0, drink: 0, alcohol: 0, event: 0, membership: 0 } 
-        };
+        months[month] = { total: 0, categories: { book: 0, drink: 0, alcohol: 0, event: 0, membership: 0 } };
       }
       months[month].total += order.price;
       months[month].categories[order.category] += order.price;
     });
-
-    return Object.entries(months)
-      .sort((a, b) => b[0].localeCompare(a[0])) // 按月份降序
-      .map(([month, data]) => ({
-        month,
-        total: data.total,
-        book: { val: data.categories.book, pct: data.total ? (data.categories.book / data.total) * 100 : 0 },
-        drink: { val: data.categories.drink, pct: data.total ? (data.categories.drink / data.total) * 100 : 0 },
-        alcohol: { val: data.categories.alcohol, pct: data.total ? (data.categories.alcohol / data.total) * 100 : 0 },
-        membership: { val: data.categories.membership, pct: data.total ? (data.categories.membership / data.total) * 100 : 0 },
-        event: { val: data.categories.event, pct: data.total ? (data.categories.event / data.total) * 100 : 0 },
-      }));
+    return Object.entries(months).sort((a, b) => b[0].localeCompare(a[0])).map(([month, data]) => ({
+      month,
+      total: data.total,
+      book: { val: data.categories.book, pct: data.total ? (data.categories.book / data.total) * 100 : 0 },
+      drink: { val: data.categories.drink, pct: data.total ? (data.categories.drink / data.total) * 100 : 0 },
+      alcohol: { val: data.categories.alcohol, pct: data.total ? (data.categories.alcohol / data.total) * 100 : 0 },
+      membership: { val: data.categories.membership, pct: data.total ? (data.categories.membership / data.total) * 100 : 0 },
+      event: { val: data.categories.event, pct: data.total ? (data.categories.event / data.total) * 100 : 0 },
+    }));
   }, [orders]);
-
-  // 耗材月度汇总数据
-  const purchaseMonthlySummary = useMemo(() => {
-    const months: Record<string, { total: number; categories: Record<string, number> }> = {};
-    
-    purchases.forEach(p => {
-      const m = p.date.substring(0, 7); // YYYY-MM
-      if (!months[m]) {
-        months[m] = { 
-          total: 0, 
-          categories: { '饮品耗材': 0, '清洁耗材': 0, '书': 0, '其他': 0 } 
-        };
-      }
-      months[m].total += p.amount;
-      months[m].categories[p.category] = (months[m].categories[p.category] || 0) + p.amount;
-    });
-
-    return Object.entries(months)
-      .sort((a, b) => b[0].localeCompare(a[0]))
-      .map(([month, data]) => ({
-        month,
-        total: data.total,
-        details: [
-          { label: '饮品耗材', val: data.categories['饮品耗材'] || 0 },
-          { label: '清洁耗材', val: data.categories['清洁耗材'] || 0 },
-          { label: '书籍采购', val: data.categories['书'] || 0 },
-          { label: '其他', val: data.categories['其他'] || 0 },
-        ].map(item => ({
-          ...item,
-          pct: data.total ? (item.val / data.total) * 100 : 0
-        }))
-      }));
-  }, [purchases]);
 
   const totalRevenue = useMemo(() => 
     orders.reduce((sum, o) => sum + o.price, 0) + monthlyIncomes.reduce((sum, m) => sum + m.amount, 0),
@@ -183,126 +151,95 @@ const App: React.FC = () => {
 
   const totalPurchase = useMemo(() => purchases.reduce((sum, p) => sum + p.amount, 0), [purchases]);
   const totalFixedCostsGlobal = useMemo(() => fixedCosts.reduce((sum, f) => sum + f.amount, 0), [fixedCosts]);
-  
-  const hjFixedCosts = useMemo(() => fixedCosts.filter(f => f.shopId === 'hj'), [fixedCosts]);
-  const zbFixedCosts = useMemo(() => fixedCosts.filter(f => f.shopId === 'zb'), [fixedCosts]);
-
   const activeShopNameForCost = useMemo(() => INITIAL_SHOPS.find(s => s.id === costFilterShopId)?.name || '', [costFilterShopId]);
 
   const handleOrderUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.[0]) return;
-    setLoading(true);
-    setStatusMsg(`正在导入小程序订单...`);
+    setLoading(true); setStatusMsg(`正在导入小程序订单...`);
     try {
       const parsed = await parseOrderExcel(e.target.files[0]);
-      const newOrders = parsed.map(o => ({ ...o, shopId: 'global' }));
-      setOrders(prev => [...prev, ...newOrders]);
-      alert(`🎉 成功导入 ${newOrders.length} 条订单`);
-    } catch (err: any) {
-      alert(`导入失败: ${err.message}`);
-    } finally {
-      setLoading(false);
-      e.target.value = '';
-    }
+      setOrders(prev => [...prev, ...parsed.map(o => ({ ...o, shopId: 'global' }))]);
+    } catch (err: any) { alert(`导入失败: ${err.message}`); } finally { setLoading(false); e.target.value = ''; }
   };
 
   const handlePaymentUpload = async (e: React.ChangeEvent<HTMLInputElement>, source: 'wechat' | 'alipay' | 'you') => {
     if (!e.target.files?.[0]) return;
-    setLoading(true);
-    const sourceLabel = source === 'wechat' ? '微信' : source === 'alipay' ? '支付宝' : '友店';
-    setStatusMsg(`正在解析${sourceLabel}支付流水...`);
+    setLoading(true); setStatusMsg(`正在解析支付流水...`);
     try {
       const parsed = await parsePaymentCSV(e.target.files[0], source);
-      const newPayments = parsed.map(p => ({ ...p, shopId: 'global' }));
-      setPayments(prev => [...prev, ...newPayments]);
-      alert(`✅ 导入成功：${newPayments.length} 笔${sourceLabel}流水记录已加入总账`);
-    } catch (err: any) {
-      alert(`解析失败: ${err.message}`);
-    } finally {
-      setLoading(false);
-      e.target.value = '';
-    }
+      setPayments(prev => [...prev, ...parsed.map(p => ({ ...p, shopId: 'global' }))]);
+    } catch (err: any) { alert(`解析失败: ${err.message}`); } finally { setLoading(false); e.target.value = ''; }
   };
 
   const handlePurchaseExcelUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.[0]) return;
-    setLoading(true);
-    setStatusMsg('正在解析耗材采购 Excel...');
+    setLoading(true); setStatusMsg('正在解析耗材采购 Excel...');
     try {
       const parsed = await parsePurchaseExcel(e.target.files[0]);
       setPurchases(prev => [...prev, ...parsed]);
-      alert(`✅ 成功导入 ${parsed.length} 笔采购记录`);
+    } catch (err: any) { alert(`导入失败: ${err.message}`); } finally { setLoading(false); e.target.value = ''; }
+  };
+
+  const handleSyncToSheet = async () => {
+    if (!syncConfig.webhookUrl) {
+      alert('请先在设置中配置 Google Apps Script Webhook URL');
+      setActiveTab('inventory');
+      return;
+    }
+    setSyncing(true);
+    try {
+      const formattedDaily = dailySummary.map(d => ({
+        date: d.date,
+        book: d.categories.book,
+        drink: d.categories.drink,
+        drinkCount: d.drinkCount,
+        alcohol: d.categories.alcohol,
+        membership: d.categories.membership,
+        event: d.categories.event,
+        total: (d.categories.book || 0) + (d.categories.drink || 0) + (d.categories.alcohol || 0) + (d.categories.membership || 0) + (d.categories.event || 0)
+      }));
+
+      await syncToGoogleSheet(syncConfig.webhookUrl, {
+        daily: formattedDaily,
+        purchases: purchases,
+        costs: fixedCosts,
+        manualIncomes: monthlyIncomes
+      });
+      
+      setSyncConfig(prev => ({ ...prev, lastSyncedAt: new Date().toLocaleString() }));
+      alert('✅ 数据已成功同步，请前往 Google 表格查看。');
     } catch (err: any) {
-      alert(`导入失败: ${err.message}`);
+      alert(`同步失败: ${err.message}`);
     } finally {
-      setLoading(false);
-      e.target.value = '';
+      setSyncing(false);
     }
   };
 
   const handleAddCost = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
-    const cost: FixedCost = {
-      id: `cost-${Date.now()}`,
-      shopId: costFilterShopId,
-      date: fd.get('date') as string,
-      type: fd.get('type') as any,
-      amount: parseFloat(fd.get('amount') as string)
-    };
-    setFixedCosts(prev => [...prev, cost]);
+    setFixedCosts(prev => [...prev, {
+      id: `cost-${Date.now()}`, shopId: costFilterShopId, date: fd.get('date') as string,
+      type: fd.get('type') as any, amount: parseFloat(fd.get('amount') as string)
+    }]);
     e.currentTarget.reset();
   };
 
   const addManualIncome = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
-    const inc: MonthlyManualIncome = {
-      shopId: 'global',
-      month: fd.get('month') as string,
-      amount: parseFloat(fd.get('amount') as string),
-      note: fd.get('note') as string
-    };
-    setMonthlyIncomes(prev => [...prev, inc]);
+    setMonthlyIncomes(prev => [...prev, {
+      shopId: 'global', month: fd.get('month') as string, amount: parseFloat(fd.get('amount') as string), note: fd.get('note') as string
+    }]);
     e.currentTarget.reset();
   };
 
-  const clearReconciliationData = () => {
-    const confirmClear = window.confirm('确定要清空所有已导入的订单和流水数据吗？该操作不可撤销。');
-    if (confirmClear) {
-      localStorage.removeItem('bd_orders');
-      localStorage.removeItem('bd_payments');
-      setOrders([]);
-      setPayments([]);
-      alert('已成功清空对账数据。');
-    }
-  };
-
-  const resetAllData = () => {
-    const confirmReset = window.confirm('确定要重置所有数据吗？这将清除所有支出、采购及收入记录。');
-    if (confirmReset) {
-      localStorage.clear();
-      window.location.reload();
-    }
-  };
-
-  const startEditingPurchase = (item: PurchaseRecord) => {
-    setEditingPurchaseId(item.id);
-    setEditPurchaseForm({ ...item });
-  };
-
-  const cancelEditingPurchase = () => {
-    setEditingPurchaseId(null);
-    setEditPurchaseForm({});
-  };
-
+  const startEditingPurchase = (item: PurchaseRecord) => { setEditingPurchaseId(item.id); setEditPurchaseForm({ ...item }); };
+  const cancelEditingPurchase = () => { setEditingPurchaseId(null); setEditPurchaseForm({}); };
   const saveEditedPurchase = () => {
     if (!editingPurchaseId) return;
-    setPurchases(prev => prev.map(p => 
-      p.id === editingPurchaseId ? (editPurchaseForm as PurchaseRecord) : p
-    ));
+    setPurchases(prev => prev.map(p => p.id === editingPurchaseId ? (editPurchaseForm as PurchaseRecord) : p));
     setEditingPurchaseId(null);
-    setEditPurchaseForm({});
   };
 
   return (
@@ -325,9 +262,9 @@ const App: React.FC = () => {
           {[
             { id: 'dashboard', label: '经营看板', icon: LayoutDashboard },
             { id: 'reconcile', label: '流水对账', icon: ArrowLeftRight },
-            { id: 'costs', label: '分店支出 (人工房租)', icon: Wallet },
-            { id: 'purchases', label: '耗材采购 (Excel)', icon: ShoppingBag },
-            { id: 'inventory', label: '销售洞察', icon: TrendingUp },
+            { id: 'costs', label: '分店支出', icon: Wallet },
+            { id: 'purchases', label: '耗材采购', icon: ShoppingBag },
+            { id: 'inventory', label: '销售洞察 & 云同步', icon: TrendingUp },
           ].map((item) => (
             <button
               key={item.id}
@@ -345,20 +282,11 @@ const App: React.FC = () => {
         </nav>
 
         <div className="p-8 border-t border-slate-800/50 space-y-4">
-           <div className="bg-slate-800/40 p-5 rounded-3xl border border-slate-700/50">
-              <div className="flex justify-between items-center mb-4">
-                 <span className="text-[10px] text-slate-500 font-black uppercase tracking-widest">分店活跃</span>
-              </div>
-              <div className="space-y-3">
-                 {INITIAL_SHOPS.map(shop => (
-                   <div key={shop.id} className="flex items-center gap-3">
-                      <div className={`w-2 h-2 rounded-full ${shop.id === 'hj' ? 'bg-orange-400' : 'bg-blue-400'} animate-pulse`}></div>
-                      <span className="text-xs font-bold text-slate-300">{shop.name}</span>
-                   </div>
-                 ))}
-              </div>
-           </div>
-           <button onClick={resetAllData} className="w-full py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest text-slate-600 hover:text-rose-500 hover:bg-rose-500/10 transition-all">
+           <button onClick={handleSyncToSheet} disabled={syncing} className="w-full py-4 bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-400 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2">
+             {syncing ? <RefreshCw className="w-3 h-3 animate-spin" /> : <CloudUpload className="w-3 h-3" />}
+             {syncing ? 'Syncing...' : 'Sync to Cloud'}
+           </button>
+           <button onClick={() => { if(confirm('重置所有数据？')) { localStorage.clear(); location.reload(); } }} className="w-full py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest text-slate-600 hover:text-rose-500 transition-all">
              Reset All Data
            </button>
         </div>
@@ -371,9 +299,7 @@ const App: React.FC = () => {
             <div className="bg-white p-10 rounded-[40px] shadow-2xl flex flex-col items-center gap-6 max-w-sm w-full animate-in zoom-in-95">
                <div className="relative">
                  <div className="animate-spin rounded-full h-20 w-20 border-[3px] border-indigo-50 border-t-indigo-600"></div>
-                 <div className="absolute inset-0 flex items-center justify-center">
-                    <Upload className="w-8 h-8 text-indigo-600" />
-                 </div>
+                 <div className="absolute inset-0 flex items-center justify-center"><Upload className="w-8 h-8 text-indigo-600" /></div>
                </div>
                <div className="text-center">
                   <h4 className="font-black text-slate-800 text-xl mb-1">正在加载...</h4>
@@ -385,32 +311,31 @@ const App: React.FC = () => {
 
         <header className="sticky top-0 bg-white/80 backdrop-blur-md border-b border-slate-100 px-10 py-5 flex justify-between items-center z-50">
           <div className="flex items-center gap-4">
-             <h2 className="text-lg font-black text-slate-800">数据导入</h2>
+             <h2 className="text-lg font-black text-slate-800">数据导入中心</h2>
              <div className="h-4 w-px bg-slate-200"></div>
              <div className="flex gap-2">
-                <label className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl cursor-pointer hover:bg-indigo-100 transition-colors border border-indigo-100">
-                  <Upload className="w-3.5 h-3.5" />
-                  <span className="text-xs font-black uppercase">订单 Excel</span>
+                <label className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl cursor-pointer hover:bg-indigo-100 border border-indigo-100">
+                  <Upload className="w-3.5 h-3.5" /><span className="text-xs font-black uppercase">订单 Excel</span>
                   <input type="file" className="hidden" accept=".xlsx,.xls" onChange={handleOrderUpload} />
                 </label>
-                <label className="flex items-center gap-2 px-4 py-2 bg-orange-50 text-orange-600 rounded-xl cursor-pointer hover:bg-orange-100 transition-colors border border-orange-100">
-                  <FileSpreadsheet className="w-3.5 h-3.5" />
-                  <span className="text-xs font-black uppercase">采购 Excel</span>
+                <label className="flex items-center gap-2 px-4 py-2 bg-orange-50 text-orange-600 rounded-xl cursor-pointer hover:bg-orange-100 border border-orange-100">
+                  <FileSpreadsheet className="w-3.5 h-3.5" /><span className="text-xs font-black uppercase">采购 Excel</span>
                   <input type="file" className="hidden" accept=".xlsx,.xls" onChange={handlePurchaseExcelUpload} />
                 </label>
-                <label className="flex items-center gap-2 px-4 py-2 bg-emerald-50 text-emerald-600 rounded-xl cursor-pointer hover:bg-emerald-100 transition-colors border border-emerald-100">
-                  <Upload className="w-3.5 h-3.5" />
-                  <span className="text-xs font-black uppercase">微信流水</span>
+                <label className="flex items-center gap-2 px-4 py-2 bg-emerald-50 text-emerald-600 rounded-xl cursor-pointer hover:bg-emerald-100 border border-emerald-100">
+                  <Upload className="w-3.5 h-3.5" /><span className="text-xs font-black uppercase">支付流水</span>
                   <input type="file" className="hidden" accept=".csv" onChange={(e) => handlePaymentUpload(e, 'wechat')} />
                 </label>
              </div>
           </div>
 
-          <div className="flex items-center gap-3">
-             <div className="text-right mr-4">
-                <p className="text-[10px] text-slate-400 font-black uppercase">数据更新至</p>
-                <p className="text-xs font-bold text-slate-700">{new Date().toLocaleDateString()}</p>
-             </div>
+          <div className="flex items-center gap-6">
+             {syncConfig.lastSyncedAt && (
+               <div className="text-right">
+                 <p className="text-[10px] text-emerald-500 font-black uppercase">最近同步</p>
+                 <p className="text-[10px] font-bold text-slate-400">{syncConfig.lastSyncedAt}</p>
+               </div>
+             )}
              <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-black text-xs shadow-lg">BD</div>
           </div>
         </header>
@@ -419,87 +344,38 @@ const App: React.FC = () => {
           {activeTab === 'dashboard' && (
             <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-500">
               <div className="grid grid-cols-4 gap-6">
-                <StatCard title="总营收 (合并)" value={`¥${totalRevenue.toLocaleString()}`} subValue="全店订单 + 手动收入" icon={<TrendingUp />} color="bg-emerald-500" />
-                <StatCard title="耗材采购 (合并)" value={`¥${totalPurchase.toLocaleString()}`} subValue="全店通用补货支出" icon={<ShoppingBag />} color="bg-orange-500" />
-                <StatCard title="分店固定支出" value={`¥${totalFixedCostsGlobal.toLocaleString()}`} subValue="海椒市 + 棕北 (房租人工)" icon={<Wallet />} color="bg-indigo-500" />
-                <StatCard title="预估总盈余" value={`¥${(totalRevenue - totalPurchase - totalFixedCostsGlobal).toLocaleString()}`} subValue="未计入税费和其他杂支" icon={<Ticket />} color="bg-slate-900" />
+                <StatCard title="总营收 (合并)" value={`¥${totalRevenue.toLocaleString()}`} subValue="订单 + 手动收入" icon={<TrendingUp />} color="bg-emerald-500" />
+                <StatCard title="耗材采购 (合并)" value={`¥${totalPurchase.toLocaleString()}`} subValue="全店补货支出" icon={<ShoppingBag />} color="bg-orange-500" />
+                <StatCard title="分店固定支出" value={`¥${totalFixedCostsGlobal.toLocaleString()}`} subValue="房租 + 人工" icon={<Wallet />} color="bg-indigo-500" />
+                <StatCard title="预估总盈余" value={`¥${(totalRevenue - totalPurchase - totalFixedCostsGlobal).toLocaleString()}`} subValue="毛利润预估" icon={<Ticket />} color="bg-slate-900" />
               </div>
 
-              {/* Monthly Proportion Table */}
-              <Card title="月度分类销售占比 (金额 & 百分比)" extra={<div className="flex items-center gap-2 px-3 py-1 bg-indigo-50 rounded-lg text-[10px] font-bold text-indigo-600 uppercase tracking-wider"><PieIcon className="w-3 h-3" /> 结构分析</div>}>
-                 <div className="overflow-x-auto mt-4">
-                    <table className="w-full text-left">
-                      <thead className="bg-slate-50 border-b border-slate-100">
-                        <tr>
-                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">月份</th>
-                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-indigo-600 text-right">书籍销售</th>
-                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-amber-600 text-right">饮品占比</th>
-                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-emerald-600 text-right">酒精占比</th>
-                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-rose-600 text-right">会籍占比</th>
-                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 text-right">月度订单总额</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-50">
-                        {monthlyProportionData.map((row, idx) => (
-                          <tr key={idx} className="hover:bg-slate-50 transition-colors">
-                            <td className="px-6 py-4 text-sm font-black text-slate-700">{row.month}</td>
-                            <td className="px-6 py-4 text-right">
-                               <p className="font-black text-indigo-500 tabular-nums">¥{row.book.val.toLocaleString()}</p>
-                               <p className="text-[10px] font-bold text-indigo-300">{row.book.pct.toFixed(1)}%</p>
-                            </td>
-                            <td className="px-6 py-4 text-right">
-                               <p className="font-black text-amber-500 tabular-nums">¥{row.drink.val.toLocaleString()}</p>
-                               <p className="text-[10px] font-bold text-amber-300">{row.drink.pct.toFixed(1)}%</p>
-                            </td>
-                            <td className="px-6 py-4 text-right">
-                               <p className="font-black text-emerald-500 tabular-nums">¥{row.alcohol.val.toLocaleString()}</p>
-                               <p className="text-[10px] font-bold text-emerald-300">{row.alcohol.pct.toFixed(1)}%</p>
-                            </td>
-                            <td className="px-6 py-4 text-right">
-                               <p className="font-black text-rose-500 tabular-nums">¥{row.membership.val.toLocaleString()}</p>
-                               <p className="text-[10px] font-bold text-rose-300">{row.membership.pct.toFixed(1)}%</p>
-                            </td>
-                            <td className="px-6 py-4 text-right bg-slate-50/50">
-                               <p className="font-black text-slate-900 tabular-nums text-lg">¥{row.total.toLocaleString()}</p>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                 </div>
-              </Card>
-
-              {/* Recent Income Breakdown Table */}
               <Card title="最近10日分类收入明细">
                  <div className="overflow-x-auto mt-4">
                     <table className="w-full text-left">
                       <thead className="bg-slate-50 border-b border-slate-100">
                         <tr>
-                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">日期</th>
-                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-indigo-600 text-right">书</th>
-                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-amber-600 text-right">饮品</th>
-                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-blue-400 text-center">今日出杯</th>
-                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-emerald-600 text-right">酒精</th>
-                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-rose-600 text-right">会籍</th>
-                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 text-right">活动/其他</th>
-                          <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-900 text-right">当日总计</th>
+                          <th className="px-6 py-4 text-[10px] font-black uppercase text-slate-400">日期</th>
+                          <th className="px-6 py-4 text-[10px] font-black uppercase text-indigo-600 text-right">书</th>
+                          <th className="px-6 py-4 text-[10px] font-black uppercase text-amber-600 text-right">饮品</th>
+                          <th className="px-6 py-4 text-[10px] font-black uppercase text-blue-400 text-center">今日出杯</th>
+                          <th className="px-6 py-4 text-[10px] font-black uppercase text-emerald-600 text-right">酒精</th>
+                          <th className="px-6 py-4 text-[10px] font-black uppercase text-rose-600 text-right">会籍</th>
+                          <th className="px-6 py-4 text-[10px] font-black uppercase text-slate-900 text-right">当日总计</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-50">
                         {recent10DaysTableData.map((row, idx) => (
-                          <tr key={idx} className="hover:bg-slate-50 transition-colors">
+                          <tr key={idx} className="hover:bg-slate-50">
                             <td className="px-6 py-4 text-sm font-bold text-slate-700">{row.date}</td>
-                            <td className="px-6 py-4 text-right font-black text-indigo-500 tabular-nums">¥{row.book.toLocaleString(undefined, {minimumFractionDigits: 1})}</td>
-                            <td className="px-6 py-4 text-right font-black text-amber-500 tabular-nums">¥{row.drink.toLocaleString(undefined, {minimumFractionDigits: 1})}</td>
+                            <td className="px-6 py-4 text-right font-black text-indigo-500">¥{row.book.toLocaleString()}</td>
+                            <td className="px-6 py-4 text-right font-black text-amber-500">¥{row.drink.toLocaleString()}</td>
                             <td className="px-6 py-4 text-center">
-                               <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 text-blue-600 rounded-lg text-xs font-black">
-                                 <Coffee className="w-3 h-3" /> {row.drinkCount} 杯
-                               </div>
+                               <div className="inline-flex items-center gap-1 px-3 py-1 bg-blue-50 text-blue-600 rounded-lg text-xs font-black"><Coffee className="w-3 h-3" /> {row.drinkCount}</div>
                             </td>
-                            <td className="px-6 py-4 text-right font-black text-emerald-500 tabular-nums">¥{row.alcohol.toLocaleString(undefined, {minimumFractionDigits: 1})}</td>
-                            <td className="px-6 py-4 text-right font-black text-rose-500 tabular-nums">¥{row.membership.toLocaleString(undefined, {minimumFractionDigits: 1})}</td>
-                            <td className="px-6 py-4 text-right font-bold text-slate-400 tabular-nums">¥{row.event.toLocaleString(undefined, {minimumFractionDigits: 1})}</td>
-                            <td className="px-6 py-4 text-right font-black text-slate-900 tabular-nums bg-slate-50/50">¥{row.total.toLocaleString(undefined, {minimumFractionDigits: 1})}</td>
+                            <td className="px-6 py-4 text-right font-black text-emerald-500">¥{row.alcohol.toLocaleString()}</td>
+                            <td className="px-6 py-4 text-right font-black text-rose-500">¥{row.membership.toLocaleString()}</td>
+                            <td className="px-6 py-4 text-right font-black text-slate-900 bg-slate-50/50">¥{row.total.toLocaleString()}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -509,219 +385,210 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {activeTab === 'costs' && (
+          {activeTab === 'inventory' && (
             <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-500">
-               <header className="flex justify-between items-center">
-                  <div>
-                    <h3 className="text-2xl font-black text-slate-800 tracking-tight">分店固定成本核算</h3>
-                    <p className="text-slate-500 font-medium">房租、人工、水电须在此指定分店录入</p>
+               {/* Enhanced Sync Settings Card */}
+               <Card title="Google Sheet 云端同步自动化" extra={<div className="p-2 bg-indigo-50 text-indigo-600 rounded-lg"><Settings className="w-4 h-4" /></div>}>
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-10 items-start mt-4">
+                    <div className="space-y-8">
+                      <div className="p-8 bg-slate-50 rounded-[32px] border border-slate-100 space-y-4">
+                        <label className="flex items-center gap-2 text-[10px] font-black uppercase text-slate-400 tracking-widest">
+                          <LinkIcon className="w-3 h-3" /> 第一步：粘贴 Web App URL
+                        </label>
+                        <input 
+                          type="text" 
+                          value={syncConfig.webhookUrl} 
+                          onChange={(e) => setSyncConfig({ ...syncConfig, webhookUrl: e.target.value })}
+                          placeholder="https://script.google.com/macros/s/.../exec"
+                          className="w-full p-5 bg-white rounded-2xl border-2 border-slate-200 focus:border-indigo-500 outline-none font-bold text-slate-600 shadow-sm transition-all"
+                        />
+                        <p className="text-[10px] text-slate-400 font-medium px-1">请确保 URL 以 /exec 结尾</p>
+                      </div>
+                      
+                      <div className="flex flex-col gap-4">
+                         <button onClick={handleSyncToSheet} disabled={syncing} className="w-full py-6 bg-indigo-600 text-white rounded-[28px] font-black text-sm uppercase tracking-widest hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-100 flex items-center justify-center gap-3 disabled:opacity-50">
+                            {syncing ? <RefreshCw className="w-6 h-6 animate-spin" /> : <CloudUpload className="w-6 h-6" />}
+                            {syncing ? '同步中...' : '第二步：开始同步数据'}
+                         </button>
+                         {syncConfig.lastSyncedAt && (
+                           <div className="flex items-center justify-center gap-2 text-emerald-500 text-xs font-black">
+                             <CheckCircle2 className="w-4 h-4" /> 最近同步成功于 {syncConfig.lastSyncedAt}
+                           </div>
+                         )}
+                      </div>
+                    </div>
+                    
+                    <div className="bg-white rounded-[32px] border border-slate-100 overflow-hidden shadow-sm">
+                       <div className="bg-indigo-500 p-6 text-white">
+                         <h5 className="font-black flex items-center gap-2 uppercase tracking-widest text-[11px]">
+                           <ExternalLink className="w-4 h-4" /> 配置脚本教程
+                         </h5>
+                       </div>
+                       <div className="p-8 space-y-6">
+                         <div className="space-y-4">
+                            {[
+                              { s: "1", t: "在 Google Drive 新建表格，点击菜单：扩展程序 -> Apps Script。" },
+                              { s: "2", t: "在代码编辑器中粘贴下方代码块（覆盖原有内容）。" },
+                              { s: "3", t: "点击“部署” -> “新建部署”，选择“Web 应用”。" },
+                              { s: "4", t: "将“访问者”设置为“所有人 (Anyone)”，部署并授权。" },
+                            ].map(step => (
+                              <div key={step.s} className="flex gap-4">
+                                <span className="flex-shrink-0 w-6 h-6 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center text-xs font-black">{step.s}</span>
+                                <p className="text-xs font-bold text-slate-600 leading-relaxed">{step.t}</p>
+                              </div>
+                            ))}
+                         </div>
+                         
+                         <div className="space-y-3">
+                           <div className="flex justify-between items-center px-1">
+                             <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">复制此代码</span>
+                           </div>
+                           <div className="relative group">
+                              <pre className="bg-slate-900 text-slate-300 p-5 rounded-2xl text-[10px] font-mono leading-relaxed overflow-x-auto h-48 custom-scrollbar">
+{`function doPost(e) {
+  var data = JSON.parse(e.postData.contents);
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  // 1. 同步每日营收数据
+  var sheetDaily = getOrCreateSheet(ss, "1_每日营收");
+  sheetDaily.clear();
+  sheetDaily.appendRow(["日期", "书籍", "饮品", "出杯量", "酒精", "会籍储值", "活动其他", "营收总额"]);
+  data.daily.forEach(function(r) {
+    sheetDaily.appendRow([r.date, r.book, r.drink, r.drinkCount, r.alcohol, r.membership, r.event, r.total]);
+  });
+
+  // 2. 同步采购明细数据
+  var sheetPurchases = getOrCreateSheet(ss, "2_采购明细");
+  sheetPurchases.clear();
+  sheetPurchases.appendRow(["日期", "项目", "分类", "金额"]);
+  data.purchases.forEach(function(r) {
+    sheetPurchases.appendRow([r.date, r.item, r.category, r.amount]);
+  });
+
+  // 3. 同步固定支出数据
+  var sheetCosts = getOrCreateSheet(ss, "3_分店支出");
+  sheetCosts.clear();
+  sheetCosts.appendRow(["日期", "分店", "类型", "金额"]);
+  data.costs.forEach(function(r) {
+    sheetCosts.appendRow([r.date, r.shopId, r.type, r.amount]);
+  });
+
+  return ContentService.createTextOutput("Success").setMimeType(ContentService.MimeType.TEXT);
+}
+
+function getOrCreateSheet(ss, name) {
+  var sheet = ss.getSheetByName(name);
+  if (!sheet) sheet = ss.insertSheet(name);
+  return sheet;
+}`}
+                              </pre>
+                           </div>
+                         </div>
+                       </div>
+                    </div>
                   </div>
-                  <div className="flex bg-slate-100 p-1.5 rounded-2xl border border-slate-200 shadow-inner">
+               </Card>
+
+               <div className="grid grid-cols-2 gap-10">
+                 <Card title="手动录入其他收入 (如租金返还)">
+                   <form onSubmit={addManualIncome} className="space-y-4 mt-4">
+                      <div className="grid grid-cols-2 gap-4">
+                        <input type="month" name="month" required className="p-4 bg-slate-50 rounded-2xl border-none font-bold" />
+                        <input type="number" step="0.01" name="amount" placeholder="金额 ¥0.00" required className="p-4 bg-slate-50 rounded-2xl border-none font-bold" />
+                      </div>
+                      <input type="text" name="note" placeholder="来源备注" className="w-full p-4 bg-slate-50 rounded-2xl border-none font-bold" />
+                      <button className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase text-xs shadow-lg">添加收入记录</button>
+                   </form>
+                 </Card>
+                 <Card title="书籍热销排行 (Top 30)">
+                    <div className="space-y-3 mt-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                       {Object.entries(orders.filter(o=>o.category==='book').reduce((acc:any, cur)=>{ acc[cur.productName] = (acc[cur.productName]||0)+1; return acc;}, {})).sort((a:any,b:any)=>b[1]-a[1]).slice(0, 30).map(([name, count], idx) => (
+                         <div key={name} className="flex items-center justify-between p-4 bg-slate-50 rounded-xl">
+                            <div className="flex items-center gap-4 truncate">
+                               <span className="w-6 h-6 flex items-center justify-center bg-slate-200 text-slate-500 rounded-lg font-black text-[10px]">{idx+1}</span>
+                               <span className="font-bold text-slate-700 truncate">{name}</span>
+                            </div>
+                            <span className="font-black text-indigo-600">{count as number} 本</span>
+                         </div>
+                       ))}
+                    </div>
+                 </Card>
+               </div>
+            </div>
+          )}
+
+          {activeTab === 'costs' && (
+            <div className="grid grid-cols-2 gap-10 animate-in fade-in slide-in-from-bottom-4 duration-500">
+               <Card title="录入分店固定支出">
+                  <header className="flex bg-slate-100 p-1 rounded-xl mb-6">
                     {INITIAL_SHOPS.map(shop => (
-                      <button
-                        key={shop.id}
-                        onClick={() => setCostFilterShopId(shop.id)}
-                        className={`px-8 py-2.5 rounded-xl text-sm font-black transition-all ${
-                          costFilterShopId === shop.id 
-                          ? 'bg-white text-indigo-600 shadow-md translate-y-[-1px]' 
-                          : 'text-slate-500 hover:text-slate-800'
-                        }`}
-                      >
+                      <button key={shop.id} onClick={() => setCostFilterShopId(shop.id)} className={`flex-1 py-2 text-xs font-black rounded-lg transition-all ${costFilterShopId === shop.id ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}>
                         {shop.name}
                       </button>
                     ))}
+                  </header>
+                  <form onSubmit={handleAddCost} className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <input type="date" name="date" required className="p-4 bg-slate-50 rounded-xl border-none font-bold text-sm" />
+                      <select name="type" className="p-4 bg-slate-50 rounded-xl border-none font-bold text-sm">
+                        <option>人工</option><option>房租</option><option>水电</option><option>其他</option>
+                      </select>
+                    </div>
+                    <input type="number" step="0.01" name="amount" required className="w-full p-4 bg-slate-50 rounded-xl border-none font-black text-2xl" placeholder="金额 ¥0.00" />
+                    <button type="submit" className="w-full py-4 bg-slate-900 text-white rounded-xl font-black uppercase text-xs tracking-widest hover:bg-indigo-600 transition-all">确认保存</button>
+                  </form>
+               </Card>
+               <Card title={`${activeShopNameForCost} 历史明细`}>
+                  <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
+                     {fixedCosts.filter(f => f.shopId === costFilterShopId).sort((a,b)=>b.date.localeCompare(a.date)).map(cost => (
+                       <div key={cost.id} className="flex justify-between items-center p-4 bg-white rounded-2xl border border-slate-100 group">
+                          <div><p className="font-black text-slate-800">{cost.type}</p><p className="text-[10px] text-slate-400 font-black uppercase">{cost.date}</p></div>
+                          <div className="flex items-center gap-4">
+                             <span className="text-lg font-black text-rose-500">-¥{cost.amount.toLocaleString()}</span>
+                             <button onClick={() => setFixedCosts(prev => prev.filter(f => f.id !== cost.id))} className="text-slate-200 hover:text-rose-500 transition-colors"><Trash2 className="w-4 h-4" /></button>
+                          </div>
+                       </div>
+                     ))}
                   </div>
-               </header>
-
-               <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
-                  <Card title={`录入 [${activeShopNameForCost}] 支出`}>
-                    <form onSubmit={handleAddCost} className="space-y-6">
-                       <div className="grid grid-cols-2 gap-6">
-                          <div className="space-y-2">
-                            <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">日期</label>
-                            <input type="date" name="date" required className="w-full p-4 bg-slate-50 rounded-2xl border-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-700" />
-                          </div>
-                          <div className="space-y-2">
-                            <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">类别</label>
-                            <select name="type" className="w-full p-4 bg-slate-50 rounded-2xl border-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-700 appearance-none">
-                              <option>人工</option><option>房租</option><option>水电</option><option>其他</option>
-                            </select>
-                          </div>
-                       </div>
-                       <div className="space-y-2">
-                          <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">金额 (元)</label>
-                          <input type="number" step="0.01" name="amount" required className="w-full p-6 bg-slate-50 rounded-3xl border-none focus:ring-2 focus:ring-indigo-500 font-black text-3xl text-slate-900" placeholder="0.00" />
-                       </div>
-                       <button type="submit" className="w-full py-5 bg-slate-900 text-white rounded-[24px] font-black text-sm uppercase tracking-widest hover:bg-indigo-600 transition-all shadow-xl flex items-center justify-center gap-3">
-                          <Plus className="w-5 h-5" /> 确认保存到 {activeShopNameForCost}
-                       </button>
-                    </form>
-                  </Card>
-
-                  <Card title={`${activeShopNameForCost} 支出明细`}>
-                     <div className="space-y-4 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
-                        {fixedCosts.filter(f => f.shopId === costFilterShopId).sort((a,b)=>b.date.localeCompare(a.date)).map(cost => (
-                          <div key={cost.id} className="flex justify-between items-center p-5 bg-white rounded-3xl border border-slate-100 group hover:border-indigo-100 transition-all">
-                             <div className="flex items-center gap-5">
-                                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${
-                                  cost.type === '人工' ? 'bg-indigo-50 text-indigo-500' :
-                                  cost.type === '房租' ? 'bg-purple-50 text-purple-500' :
-                                  'bg-blue-50 text-blue-500'
-                                }`}>
-                                   {cost.type === '人工' ? <Plus className="w-4 h-4" /> : <Store className="w-4 h-4" />}
-                                </div>
-                                <div>
-                                   <p className="font-black text-slate-800">{cost.type}</p>
-                                   <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest">{cost.date}</p>
-                                </div>
-                             </div>
-                             <div className="flex items-center gap-6">
-                                <span className="text-xl font-black text-rose-500 tabular-nums">-¥{cost.amount.toLocaleString()}</span>
-                                <button onClick={() => setFixedCosts(prev => prev.filter(f => f.id !== cost.id))} className="w-10 h-10 rounded-xl bg-slate-50 text-slate-300 hover:bg-rose-50 transition-all flex items-center justify-center">
-                                   <Trash2 className="w-4 h-4" />
-                                </button>
-                             </div>
-                          </div>
-                        ))}
-                     </div>
-                  </Card>
-               </div>
+               </Card>
             </div>
           )}
 
           {activeTab === 'purchases' && (
             <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-500">
-               <Card title="月度耗材分类汇总 (金额 & 百分比)">
-                  <div className="overflow-x-auto mt-4">
-                    <table className="w-full text-left">
-                      <thead className="bg-slate-50 border-b border-slate-100">
-                        <tr>
-                          <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">月份</th>
-                          <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-blue-600 text-right">饮品耗材</th>
-                          <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-emerald-600 text-right">清洁耗材</th>
-                          <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-amber-600 text-right">书籍采购</th>
-                          <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 text-right">其他</th>
-                          <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-slate-900 text-right">月度总采购</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-50">
-                        {purchaseMonthlySummary.map((row, idx) => (
-                          <tr key={idx} className="hover:bg-slate-50 transition-colors">
-                            <td className="px-8 py-5 text-sm font-black text-slate-700">{row.month}</td>
-                            {row.details.map((detail, dIdx) => (
-                              <td key={dIdx} className="px-8 py-5 text-right">
-                                <p className="font-black text-slate-800 tabular-nums">¥{detail.val.toLocaleString()}</p>
-                                <p className="text-[10px] font-bold text-slate-400">{detail.pct.toFixed(1)}%</p>
-                              </td>
-                            ))}
-                            <td className="px-8 py-5 text-right bg-slate-50/50">
-                               <p className="font-black text-orange-600 tabular-nums text-lg">¥{row.total.toLocaleString()}</p>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-               </Card>
-
-               <Card title="导入耗材采购清单 (Excel 批量导入)">
-                  <div className="mt-4 border-[6px] border-dashed border-slate-50 rounded-[50px] p-24 text-center hover:border-orange-100 hover:bg-orange-50/20 transition-all group relative overflow-hidden bg-white">
+               <Card title="导入耗材采购清单 (Excel)">
+                  <div className="mt-4 border-4 border-dashed border-slate-100 rounded-[40px] p-20 text-center hover:border-orange-200 hover:bg-orange-50/20 transition-all group relative overflow-hidden">
                      <input type="file" className="absolute inset-0 opacity-0 cursor-pointer z-10" accept=".xlsx,.xls" onChange={handlePurchaseExcelUpload} />
-                     <div className="flex flex-col items-center relative z-0">
-                        <div className="w-28 h-28 bg-orange-100 text-orange-600 rounded-[35px] flex items-center justify-center mb-10 group-hover:scale-110 transition-transform shadow-lg shadow-orange-200/50">
-                           <FileSpreadsheet className="w-14 h-14" />
-                        </div>
-                        <h4 className="text-3xl font-black text-slate-800 mb-4 tracking-tight">点击或拖拽 Excel 文件上传</h4>
-                        <p className="text-slate-400 max-w-sm mx-auto font-medium leading-relaxed">
-                          支持包含日期、项目名称、金额和分类（饮品耗材、清洁耗材、书、其他）的 Excel 表格。
-                        </p>
+                     <div className="flex flex-col items-center">
+                        <div className="w-20 h-20 bg-orange-100 text-orange-600 rounded-[28px] flex items-center justify-center mb-6 group-hover:scale-110 transition-transform shadow-lg shadow-orange-100"><FileSpreadsheet className="w-10 h-10" /></div>
+                        <h4 className="text-2xl font-black text-slate-800 mb-2">点击或拖拽采购 Excel</h4>
+                        <p className="text-slate-400 text-xs font-medium px-4 leading-relaxed">支持列名：日期/采购日期、项目/名称、分类、金额/实付</p>
                      </div>
                   </div>
                </Card>
-
-               <Card title="全局耗材采购明细">
+               <Card title="最近采购记录">
                   <div className="overflow-x-auto mt-4">
                     <table className="w-full text-left">
                       <thead className="bg-slate-50 border-b border-slate-100">
                         <tr>
-                          <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-slate-400">日期</th>
-                          <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-slate-400">商品</th>
-                          <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-slate-400">分类</th>
-                          <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-slate-400 text-right">金额</th>
-                          <th className="px-8 py-6 text-[10px] font-black uppercase tracking-widest text-slate-400 text-right">操作</th>
+                          <th className="px-6 py-4 text-[10px] font-black uppercase text-slate-400">日期</th>
+                          <th className="px-6 py-4 text-[10px] font-black uppercase text-slate-400">项目</th>
+                          <th className="px-6 py-4 text-[10px] font-black uppercase text-slate-400">分类</th>
+                          <th className="px-6 py-4 text-[10px] font-black uppercase text-slate-400 text-right">金额</th>
+                          <th className="px-6 py-4 text-[10px] font-black uppercase text-slate-400 text-right">操作</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-50">
-                        {purchases.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(p => (
-                          <tr key={p.id} className={`hover:bg-slate-50/50 transition-colors ${editingPurchaseId === p.id ? 'bg-indigo-50/50' : ''}`}>
-                            <td className="px-8 py-6 text-sm font-bold text-slate-500">
-                              {editingPurchaseId === p.id ? (
-                                <input 
-                                  type="date" 
-                                  value={editPurchaseForm.date} 
-                                  onChange={(e) => setEditPurchaseForm({...editPurchaseForm, date: e.target.value})}
-                                  className="p-2 border rounded-xl text-xs font-black"
-                                />
-                              ) : p.date}
-                            </td>
-                            <td className="px-8 py-6 font-black text-slate-800">
-                              {editingPurchaseId === p.id ? (
-                                <input 
-                                  type="text" 
-                                  value={editPurchaseForm.item} 
-                                  onChange={(e) => setEditPurchaseForm({...editPurchaseForm, item: e.target.value})}
-                                  className="w-full p-2 border rounded-xl text-sm font-black"
-                                />
-                              ) : p.item}
-                            </td>
-                            <td className="px-8 py-6">
-                              {editingPurchaseId === p.id ? (
-                                <select 
-                                  value={editPurchaseForm.category}
-                                  onChange={(e) => setEditPurchaseForm({...editPurchaseForm, category: e.target.value as any})}
-                                  className="p-2 border rounded-xl text-[10px] font-black uppercase"
-                                >
-                                  <option value="饮品耗材">饮品耗材</option>
-                                  <option value="清洁耗材">清洁耗材</option>
-                                  <option value="书">书</option>
-                                  <option value="其他">其他</option>
-                                </select>
-                              ) : (
-                                <span className="px-4 py-1.5 rounded-full bg-slate-100 text-[10px] font-black uppercase text-slate-600">{p.category}</span>
-                              )}
-                            </td>
-                            <td className="px-8 py-6 text-right font-black text-slate-900 text-lg tabular-nums">
-                              {editingPurchaseId === p.id ? (
-                                <input 
-                                  type="number" 
-                                  step="0.01"
-                                  value={editPurchaseForm.amount} 
-                                  onChange={(e) => setEditPurchaseForm({...editPurchaseForm, amount: parseFloat(e.target.value)})}
-                                  className="w-24 p-2 border rounded-xl text-right text-sm font-black"
-                                />
-                              ) : `¥${p.amount.toFixed(2)}`}
-                            </td>
-                            <td className="px-8 py-6 text-right">
+                        {purchases.sort((a,b)=>b.date.localeCompare(a.date)).map(p => (
+                          <tr key={p.id} className="hover:bg-slate-50/50">
+                            <td className="px-6 py-4 text-xs font-bold text-slate-500">{editingPurchaseId === p.id ? <input type="date" value={editPurchaseForm.date} onChange={e=>setEditPurchaseForm({...editPurchaseForm, date: e.target.value})} className="p-1 border rounded" /> : p.date}</td>
+                            <td className="px-6 py-4 font-black text-slate-800">{editingPurchaseId === p.id ? <input type="text" value={editPurchaseForm.item} onChange={e=>setEditPurchaseForm({...editPurchaseForm, item: e.target.value})} className="p-1 border rounded w-full" /> : p.item}</td>
+                            <td className="px-6 py-4 text-[10px] font-black uppercase text-slate-400">{p.category}</td>
+                            <td className="px-6 py-4 text-right font-black text-slate-900">¥{p.amount.toFixed(2)}</td>
+                            <td className="px-6 py-4 text-right">
                                <div className="flex justify-end gap-2">
-                                  {editingPurchaseId === p.id ? (
-                                    <>
-                                      <button onClick={saveEditedPurchase} className="p-2 bg-emerald-100 text-emerald-600 rounded-xl hover:bg-emerald-200 transition-colors">
-                                        <Check className="w-4 h-4" />
-                                      </button>
-                                      <button onClick={cancelEditingPurchase} className="p-2 bg-slate-100 text-slate-400 rounded-xl hover:bg-slate-200 transition-colors">
-                                        <X className="w-4 h-4" />
-                                      </button>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <button onClick={() => startEditingPurchase(p)} className="p-2 text-slate-300 hover:text-indigo-600 transition-colors">
-                                        <Edit2 className="w-4 h-4" />
-                                      </button>
-                                      <button onClick={() => setPurchases(prev => prev.filter(x=>x.id!==p.id))} className="p-2 text-slate-200 hover:text-rose-500 transition-colors">
-                                        <Trash2 className="w-4 h-4" />
-                                      </button>
-                                    </>
-                                  )}
+                                  {editingPurchaseId === p.id ? <button onClick={saveEditedPurchase} className="text-emerald-500"><Check className="w-4 h-4" /></button> : <button onClick={()=>startEditingPurchase(p)} className="text-slate-300 hover:text-indigo-600"><Edit2 className="w-4 h-4" /></button>}
+                                  <button onClick={()=>setPurchases(prev=>prev.filter(x=>x.id!==p.id))} className="text-slate-200 hover:text-rose-500"><Trash2 className="w-4 h-4" /></button>
                                </div>
                             </td>
                           </tr>
@@ -735,28 +602,16 @@ const App: React.FC = () => {
 
           {activeTab === 'reconcile' && (
             <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-              <div className="flex justify-between items-center">
-                <div>
-                  <h3 className="text-2xl font-black text-slate-800">全局收支核对明细</h3>
-                </div>
-                <button 
-                  onClick={clearReconciliationData}
-                  className="flex items-center gap-2 px-4 py-2 bg-rose-50 text-rose-600 rounded-xl text-[10px] font-black uppercase border border-rose-100 transition-all active:scale-95"
-                >
-                  <Trash2 className="w-3.5 h-3.5" /> 清空对账数据
-                </button>
-              </div>
-              
-              <Card>
+              <Card title="核对汇总 (A:小程序 B:流水实收)">
                 <div className="overflow-x-auto">
                   <table className="w-full text-left">
                     <thead className="bg-slate-50 border-b border-slate-100">
                       <tr>
-                        <th className="px-6 py-5 text-[10px] font-black text-slate-500 uppercase tracking-widest">日期</th>
-                        <th className="px-6 py-5 text-[10px] font-black text-indigo-600 uppercase tracking-widest">小程序订单 (A)</th>
-                        <th className="px-6 py-5 text-[10px] font-black text-emerald-600 uppercase tracking-widest">支付流水汇总 (B)</th>
-                        <th className="px-6 py-5 text-[10px] font-black text-slate-500 uppercase tracking-widest text-right">差额 (B-A)</th>
-                        <th className="px-6 py-5 text-[10px] font-black text-slate-500 uppercase tracking-widest text-center">对账状态</th>
+                        <th className="px-6 py-5 text-[10px] font-black text-slate-500 uppercase">日期</th>
+                        <th className="px-6 py-5 text-[10px] font-black text-indigo-600 uppercase">小程序订单 (A)</th>
+                        <th className="px-6 py-5 text-[10px] font-black text-emerald-600 uppercase">流水汇总 (B)</th>
+                        <th className="px-6 py-5 text-[10px] font-black text-slate-400 uppercase text-right">差额 (B-A)</th>
+                        <th className="px-6 py-5 text-[10px] font-black text-slate-400 uppercase text-center">状态</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50">
@@ -764,19 +619,15 @@ const App: React.FC = () => {
                         const diff = summary.paymentTotal - summary.orderTotal;
                         const isMatched = Math.abs(diff) < 1.0;
                         return (
-                          <tr key={summary.date} className="hover:bg-slate-50/30 transition-colors">
+                          <tr key={summary.date}>
                             <td className="px-6 py-5 text-sm font-black text-slate-700">{summary.date}</td>
-                            <td className="px-6 py-5 font-black text-indigo-600">¥{summary.orderTotal.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
-                            <td className="px-6 py-5 font-black text-emerald-600">¥{summary.paymentTotal.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
-                            <td className={`px-6 py-5 text-right font-black tabular-nums ${isMatched ? 'text-slate-400' : diff > 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                            <td className="px-6 py-5 font-black text-indigo-600">¥{summary.orderTotal.toLocaleString()}</td>
+                            <td className="px-6 py-5 font-black text-emerald-600">¥{summary.paymentTotal.toLocaleString()}</td>
+                            <td className={`px-6 py-5 text-right font-black ${isMatched ? 'text-slate-300' : diff > 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
                               {diff > 0 ? '+' : ''}{diff.toFixed(2)}
                             </td>
                             <td className="px-6 py-5 text-center">
-                              <div className={`inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest ${
-                                isMatched ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 'bg-rose-50 text-rose-600 border border-rose-100'
-                              }`}>
-                                {isMatched ? 'MATCHED' : 'ERROR'}
-                              </div>
+                              <span className={`inline-block px-3 py-1 rounded-full text-[10px] font-black uppercase ${isMatched ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 'bg-rose-50 text-rose-600 border border-rose-100'}`}>{isMatched ? 'OK' : 'DIFF'}</span>
                             </td>
                           </tr>
                         );
@@ -785,65 +636,6 @@ const App: React.FC = () => {
                   </table>
                 </div>
               </Card>
-            </div>
-          )}
-
-          {activeTab === 'inventory' && (
-            <div className="grid grid-cols-2 gap-10">
-               <Card title="全局热销排行 (Top 30)">
-                  <div className="space-y-4 mt-6 max-h-[700px] overflow-y-auto pr-2 custom-scrollbar">
-                     {Object.entries(orders.filter(o=>o.category==='book')
-                          .reduce((acc: any, cur) => {
-                             acc[cur.productName] = (acc[cur.productName] || 0) + 1;
-                             return acc;
-                          }, {}))
-                          .sort((a: any, b: any) => b[1] - a[1])
-                          .slice(0, 30)
-                          .map(([name, count], idx) => (
-                            <div key={name} className="flex items-center justify-between p-5 bg-slate-50 rounded-2xl group transition-all hover:bg-white hover:shadow-lg border border-transparent hover:border-indigo-100">
-                               <div className="flex items-center gap-5">
-                                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black ${idx < 3 ? 'bg-indigo-600 text-white shadow-lg' : 'bg-slate-900 text-white'}`}>
-                                    {idx + 1}
-                                  </div>
-                                  <span className="font-bold text-slate-800 truncate max-w-[240px]">{name}</span>
-                               </div>
-                               <span className="font-black text-indigo-600 tabular-nums">{count as number} 本</span>
-                            </div>
-                          ))
-                     }
-                  </div>
-               </Card>
-               <div className="space-y-10">
-                  <Card title="手动录入其他收入 (如租金返还/活动结算)">
-                    <form onSubmit={addManualIncome} className="space-y-4 mt-4">
-                       <div className="grid grid-cols-2 gap-4">
-                          <div className="space-y-2">
-                             <label className="text-[10px] font-black uppercase text-slate-400">月份</label>
-                             <input type="month" name="month" required className="w-full p-4 bg-slate-50 rounded-2xl border-none font-bold" />
-                          </div>
-                          <div className="space-y-2">
-                             <label className="text-[10px] font-black uppercase text-slate-400">金额</label>
-                             <input type="number" step="0.01" name="amount" placeholder="0.00" required className="w-full p-4 bg-slate-50 rounded-2xl border-none font-bold" />
-                          </div>
-                       </div>
-                       <div className="space-y-2">
-                          <label className="text-[10px] font-black uppercase text-slate-400">备注</label>
-                          <input type="text" name="note" placeholder="来源备注" className="w-full p-4 bg-slate-50 rounded-2xl border-none font-bold" />
-                       </div>
-                       <button className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs shadow-lg active:scale-95 transition-all">添加收入记录</button>
-                    </form>
-                  </Card>
-                  <Card title="手动收入历史">
-                     <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-                        {monthlyIncomes.slice().sort((a,b)=>b.month.localeCompare(a.month)).map((inc, idx) => (
-                          <div key={idx} className="flex justify-between items-center p-4 bg-violet-50 rounded-2xl border border-violet-100">
-                             <div><p className="font-bold text-violet-900">{inc.month}</p><p className="text-[10px] text-violet-500 font-bold uppercase">{inc.note}</p></div>
-                             <span className="font-black text-violet-700 tabular-nums">¥{inc.amount.toLocaleString()}</span>
-                          </div>
-                        ))}
-                     </div>
-                  </Card>
-               </div>
             </div>
           )}
         </div>

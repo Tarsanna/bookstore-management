@@ -57,3 +57,8 @@ export interface DailySummary {
   categories: Record<OrderCategory, number>;
   drinkCount: number;
 }
+
+export interface SyncConfig {
+  webhookUrl: string;
+  lastSyncedAt?: string;
+}

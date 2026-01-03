@@ -1,5 +1,5 @@
 
-import { OrderRecord, PaymentRecord, DailySummary, OrderCategory } from '../types';
+import { OrderRecord, PaymentRecord, DailySummary, OrderCategory, PurchaseRecord } from '../types';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
 
@@ -103,6 +103,46 @@ export const parseOrderExcel = (file: File): Promise<OrderRecord[]> => {
         resolve(records);
       } catch (err) {
         reject(new Error('Excel 解析失败，请检查文件格式是否与模板一致'));
+      }
+    };
+    reader.onerror = () => reject(new Error('文件读取出错'));
+    reader.readAsArrayBuffer(file);
+  });
+};
+
+export const parsePurchaseExcel = (file: File): Promise<PurchaseRecord[]> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows: any[] = XLSX.utils.sheet_to_json(worksheet);
+
+        const records: PurchaseRecord[] = rows.map((row, index) => {
+          const date = formatExcelDate(row['日期'] || row['采购日期'] || row['时间']);
+          const item = row['项目'] || row['名称'] || row['商品名称'] || '未知耗材';
+          const amount = parseFloat(row['金额'] || row['金额(元)'] || row['实付'] || 0);
+          
+          let category = row['分类'] || row['类别'] || '其他';
+          if (!['饮品耗材', '清洁耗材', '书', '其他'].includes(category)) {
+            category = '其他';
+          }
+
+          return {
+            id: `purch-${Date.now()}-${index}-${Math.random()}`,
+            shopId: 'global',
+            date,
+            item,
+            category: category as any,
+            amount
+          };
+        }).filter(r => r.amount > 0);
+
+        resolve(records);
+      } catch (err) {
+        reject(new Error('耗材 Excel 解析失败，请检查列名（需包含日期、项目、金额、分类）'));
       }
     };
     reader.onerror = () => reject(new Error('文件读取出错'));

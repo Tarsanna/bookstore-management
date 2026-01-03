@@ -27,14 +27,14 @@ import {
   PieChart as PieIcon,
   Edit2,
   Check,
-  X
+  X,
+  FileSpreadsheet
 } from 'lucide-react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend 
 } from 'recharts';
 import { OrderRecord, PaymentRecord, PurchaseRecord, FixedCost, DailySummary, MonthlyManualIncome, Shop, OrderCategory } from './types';
-import { parseOrderExcel, parsePaymentCSV, aggregateDailySummary } from './utils/dataProcessors';
-import { extractPurchaseFromImage } from './services/geminiService';
+import { parseOrderExcel, parsePaymentCSV, aggregateDailySummary, parsePurchaseExcel } from './utils/dataProcessors';
 
 // Predefined Shops
 const INITIAL_SHOPS: Shop[] = [
@@ -222,31 +222,16 @@ const App: React.FC = () => {
     }
   };
 
-  const handlePurchaseImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePurchaseExcelUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.[0]) return;
     setLoading(true);
-    setStatusMsg('AI 正在扫描长图并识别耗材采购...');
+    setStatusMsg('正在解析耗材采购 Excel...');
     try {
-      const reader = new FileReader();
-      const base64 = await new Promise<string>((resolve) => {
-        reader.readAsDataURL(e.target.files![0]);
-        reader.onload = () => resolve((reader.result as string).split(',')[1]);
-      });
-      const data = await extractPurchaseFromImage(base64);
-      if (data?.items) {
-        const newItems = data.items.map((item: any) => ({
-          id: `purch-${Date.now()}-${Math.random()}`,
-          shopId: 'global',
-          date: item.date,
-          item: item.name,
-          category: item.category,
-          amount: item.price
-        }));
-        setPurchases(prev => [...prev, ...newItems]);
-        alert(`识别成功！${newItems.length} 笔采购记录已加入耗材账本`);
-      }
+      const parsed = await parsePurchaseExcel(e.target.files[0]);
+      setPurchases(prev => [...prev, ...parsed]);
+      alert(`✅ 成功导入 ${parsed.length} 笔采购记录`);
     } catch (err: any) {
-      alert(`OCR 失败: ${err.message}`);
+      alert(`导入失败: ${err.message}`);
     } finally {
       setLoading(false);
       e.target.value = '';
@@ -339,7 +324,7 @@ const App: React.FC = () => {
             { id: 'dashboard', label: '经营看板', icon: LayoutDashboard },
             { id: 'reconcile', label: '流水对账', icon: ArrowLeftRight },
             { id: 'costs', label: '分店支出 (人工房租)', icon: Wallet },
-            { id: 'purchases', label: '耗材采购 (OCR)', icon: ShoppingBag },
+            { id: 'purchases', label: '耗材采购 (Excel)', icon: ShoppingBag },
             { id: 'inventory', label: '销售洞察', icon: TrendingUp },
           ].map((item) => (
             <button
@@ -403,18 +388,18 @@ const App: React.FC = () => {
              <div className="flex gap-2">
                 <label className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl cursor-pointer hover:bg-indigo-100 transition-colors border border-indigo-100">
                   <Upload className="w-3.5 h-3.5" />
-                  <span className="text-xs font-black uppercase">小程序订单</span>
+                  <span className="text-xs font-black uppercase">订单 Excel</span>
                   <input type="file" className="hidden" accept=".xlsx,.xls" onChange={handleOrderUpload} />
+                </label>
+                <label className="flex items-center gap-2 px-4 py-2 bg-orange-50 text-orange-600 rounded-xl cursor-pointer hover:bg-orange-100 transition-colors border border-orange-100">
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  <span className="text-xs font-black uppercase">采购 Excel</span>
+                  <input type="file" className="hidden" accept=".xlsx,.xls" onChange={handlePurchaseExcelUpload} />
                 </label>
                 <label className="flex items-center gap-2 px-4 py-2 bg-emerald-50 text-emerald-600 rounded-xl cursor-pointer hover:bg-emerald-100 transition-colors border border-emerald-100">
                   <Upload className="w-3.5 h-3.5" />
                   <span className="text-xs font-black uppercase">微信流水</span>
                   <input type="file" className="hidden" accept=".csv" onChange={(e) => handlePaymentUpload(e, 'wechat')} />
-                </label>
-                <label className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-600 rounded-xl cursor-pointer hover:bg-blue-100 transition-colors border border-blue-100">
-                  <Upload className="w-3.5 h-3.5" />
-                  <span className="text-xs font-black uppercase">支付宝流水</span>
-                  <input type="file" className="hidden" accept=".csv" onChange={(e) => handlePaymentUpload(e, 'alipay')} />
                 </label>
              </div>
           </div>
@@ -477,18 +462,13 @@ const App: React.FC = () => {
                             </td>
                           </tr>
                         ))}
-                        {monthlyProportionData.length === 0 && (
-                          <tr>
-                            <td colSpan={6} className="py-16 text-center text-slate-300 italic font-medium">暂无月度统计数据</td>
-                          </tr>
-                        )}
                       </tbody>
                     </table>
                  </div>
               </Card>
 
               {/* Recent Income Breakdown Table */}
-              <Card title="最近10日分类收入明细" extra={<div className="flex items-center gap-2 px-3 py-1 bg-slate-100 rounded-lg text-[10px] font-bold text-slate-500 uppercase tracking-wider"><TableIcon className="w-3 h-3" /> 数据清单</div>}>
+              <Card title="最近10日分类收入明细">
                  <div className="overflow-x-auto mt-4">
                     <table className="w-full text-left">
                       <thead className="bg-slate-50 border-b border-slate-100">
@@ -514,49 +494,10 @@ const App: React.FC = () => {
                             <td className="px-6 py-4 text-right font-black text-slate-900 tabular-nums bg-slate-50/50">¥{row.total.toLocaleString(undefined, {minimumFractionDigits: 1})}</td>
                           </tr>
                         ))}
-                        {recent10DaysTableData.length === 0 && (
-                          <tr>
-                            <td colSpan={7} className="py-20 text-center text-slate-300 font-black italic">
-                              暂无订单数据，请先导入小程序 Excel
-                            </td>
-                          </tr>
-                        )}
                       </tbody>
                     </table>
                  </div>
               </Card>
-
-              <div className="grid grid-cols-1 gap-8">
-                  <Card title="双店固定成本构成对比">
-                    <div className="h-80 mt-6">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={[
-                          { 
-                            name: '海椒市', 
-                            '人工': hjFixedCosts.filter(f=>f.type==='人工').reduce((s,f)=>s+f.amount,0),
-                            '房租': hjFixedCosts.filter(f=>f.type==='房租').reduce((s,f)=>s+f.amount,0),
-                            '水电': hjFixedCosts.filter(f=>f.type==='水电').reduce((s,f)=>s+f.amount,0),
-                          },
-                          { 
-                            name: '棕北', 
-                            '人工': zbFixedCosts.filter(f=>f.type==='人工').reduce((s,f)=>s+f.amount,0),
-                            '房租': zbFixedCosts.filter(f=>f.type==='房租').reduce((s,f)=>s+f.amount,0),
-                            '水电': zbFixedCosts.filter(f=>f.type==='水电').reduce((s,f)=>s+f.amount,0),
-                          }
-                        ]}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                          <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#64748b', fontSize: 12, fontWeight: 700}} dy={10} />
-                          <YAxis axisLine={false} tickLine={false} tick={{fill: '#64748b', fontSize: 10}} />
-                          <Tooltip cursor={{fill: '#f8fafc'}} contentStyle={{borderRadius: '16px', border: 'none', boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)'}} />
-                          <Legend verticalAlign="top" align="right" wrapperStyle={{paddingBottom: '20px'}} />
-                          <Bar dataKey="人工" stackId="a" fill="#6366f1" radius={[0, 0, 0, 0]} barSize={40} />
-                          <Bar dataKey="房租" stackId="a" fill="#8b5cf6" radius={[0, 0, 0, 0]} />
-                          <Bar dataKey="水电" stackId="a" fill="#0ea5e9" radius={[4, 4, 0, 0]} />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </Card>
-              </div>
             </div>
           )}
 
@@ -603,7 +544,7 @@ const App: React.FC = () => {
                           <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">金额 (元)</label>
                           <input type="number" step="0.01" name="amount" required className="w-full p-6 bg-slate-50 rounded-3xl border-none focus:ring-2 focus:ring-indigo-500 font-black text-3xl text-slate-900" placeholder="0.00" />
                        </div>
-                       <button type="submit" className="w-full py-5 bg-slate-900 text-white rounded-[24px] font-black text-sm uppercase tracking-widest hover:bg-indigo-600 transition-all shadow-xl active:scale-[0.98] flex items-center justify-center gap-3">
+                       <button type="submit" className="w-full py-5 bg-slate-900 text-white rounded-[24px] font-black text-sm uppercase tracking-widest hover:bg-indigo-600 transition-all shadow-xl flex items-center justify-center gap-3">
                           <Plus className="w-5 h-5" /> 确认保存到 {activeShopNameForCost}
                        </button>
                     </form>
@@ -612,7 +553,7 @@ const App: React.FC = () => {
                   <Card title={`${activeShopNameForCost} 支出明细`}>
                      <div className="space-y-4 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
                         {fixedCosts.filter(f => f.shopId === costFilterShopId).sort((a,b)=>b.date.localeCompare(a.date)).map(cost => (
-                          <div key={cost.id} className="flex justify-between items-center p-5 bg-white rounded-3xl border border-slate-100 group hover:border-indigo-100 hover:shadow-lg transition-all">
+                          <div key={cost.id} className="flex justify-between items-center p-5 bg-white rounded-3xl border border-slate-100 group hover:border-indigo-100 transition-all">
                              <div className="flex items-center gap-5">
                                 <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${
                                   cost.type === '人工' ? 'bg-indigo-50 text-indigo-500' :
@@ -628,17 +569,12 @@ const App: React.FC = () => {
                              </div>
                              <div className="flex items-center gap-6">
                                 <span className="text-xl font-black text-rose-500 tabular-nums">-¥{cost.amount.toLocaleString()}</span>
-                                <button onClick={() => setFixedCosts(prev => prev.filter(f => f.id !== cost.id))} className="w-10 h-10 rounded-xl bg-slate-50 text-slate-300 hover:bg-rose-50 hover:text-rose-500 transition-all flex items-center justify-center">
+                                <button onClick={() => setFixedCosts(prev => prev.filter(f => f.id !== cost.id))} className="w-10 h-10 rounded-xl bg-slate-50 text-slate-300 hover:bg-rose-50 transition-all flex items-center justify-center">
                                    <Trash2 className="w-4 h-4" />
                                 </button>
                              </div>
                           </div>
                         ))}
-                        {fixedCosts.filter(f => f.shopId === costFilterShopId).length === 0 && (
-                          <div className="text-center py-24 text-slate-300 font-bold italic border-4 border-dashed border-slate-50 rounded-[40px]">
-                            [ {activeShopNameForCost} ] 暂无支出记录
-                          </div>
-                        )}
                      </div>
                   </Card>
                </div>
@@ -647,8 +583,7 @@ const App: React.FC = () => {
 
           {activeTab === 'purchases' && (
             <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-500">
-               {/* 新增：耗材分类汇总表 */}
-               <Card title="月度耗材分类汇总 (金额 & 百分比)" extra={<div className="flex items-center gap-2 px-3 py-1 bg-orange-50 rounded-lg text-[10px] font-bold text-orange-600 uppercase tracking-wider"><BarChart3 className="w-3 h-3" /> 支出分析</div>}>
+               <Card title="月度耗材分类汇总 (金额 & 百分比)">
                   <div className="overflow-x-auto mt-4">
                     <table className="w-full text-left">
                       <thead className="bg-slate-50 border-b border-slate-100">
@@ -676,26 +611,21 @@ const App: React.FC = () => {
                             </td>
                           </tr>
                         ))}
-                        {purchaseMonthlySummary.length === 0 && (
-                          <tr>
-                            <td colSpan={6} className="py-12 text-center text-slate-300 italic font-medium">暂无月度汇总数据，请先识别采购截图</td>
-                          </tr>
-                        )}
                       </tbody>
                     </table>
                   </div>
                </Card>
 
-               <Card title="全局耗材采购识别 (不分店)">
+               <Card title="导入耗材采购清单 (Excel 批量导入)">
                   <div className="mt-4 border-[6px] border-dashed border-slate-50 rounded-[50px] p-24 text-center hover:border-orange-100 hover:bg-orange-50/20 transition-all group relative overflow-hidden bg-white">
-                     <input type="file" className="absolute inset-0 opacity-0 cursor-pointer z-10" accept="image/*" onChange={handlePurchaseImageUpload} />
+                     <input type="file" className="absolute inset-0 opacity-0 cursor-pointer z-10" accept=".xlsx,.xls" onChange={handlePurchaseExcelUpload} />
                      <div className="flex flex-col items-center relative z-0">
-                        <div className="w-28 h-28 bg-orange-100 text-orange-600 rounded-[35px] flex items-center justify-center mb-10 group-hover:scale-110 group-hover:rotate-3 transition-transform shadow-lg shadow-orange-200/50">
-                           <ShoppingBag className="w-14 h-14" />
+                        <div className="w-28 h-28 bg-orange-100 text-orange-600 rounded-[35px] flex items-center justify-center mb-10 group-hover:scale-110 transition-transform shadow-lg shadow-orange-200/50">
+                           <FileSpreadsheet className="w-14 h-14" />
                         </div>
-                        <h4 className="text-3xl font-black text-slate-800 mb-4 tracking-tight">上传采购清单截图</h4>
+                        <h4 className="text-3xl font-black text-slate-800 mb-4 tracking-tight">点击或拖拽 Excel 文件上传</h4>
                         <p className="text-slate-400 max-w-sm mx-auto font-medium leading-relaxed">
-                          AI 会自动识别拼多多、淘宝等订单长图，识别结果将归入全局耗材支出，不区分店铺。
+                          支持包含日期、项目名称、金额和分类（饮品耗材、清洁耗材、书、其他）的 Excel 表格。
                         </p>
                      </div>
                   </div>
@@ -800,19 +730,13 @@ const App: React.FC = () => {
               <div className="flex justify-between items-center">
                 <div>
                   <h3 className="text-2xl font-black text-slate-800">全局收支核对明细</h3>
-                  <p className="text-slate-500 text-sm font-medium">核对小程序订单额与各支付渠道（微信/支付宝等）实收到账的一致性</p>
                 </div>
-                <div className="flex items-center gap-3">
-                   <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 text-amber-700 rounded-xl text-[10px] font-black uppercase border border-amber-100">
-                      <Info className="w-3.5 h-3.5" /> 存在差额时请检查是否有手动退款或漏单
-                   </div>
-                   <button 
-                      onClick={clearReconciliationData}
-                      className="flex items-center gap-2 px-4 py-2 bg-rose-50 text-rose-600 rounded-xl text-[10px] font-black uppercase border border-rose-100 hover:bg-rose-100 transition-all active:scale-95"
-                   >
-                     <Trash2 className="w-3.5 h-3.5" /> 清空对账数据
-                   </button>
-                </div>
+                <button 
+                  onClick={clearReconciliationData}
+                  className="flex items-center gap-2 px-4 py-2 bg-rose-50 text-rose-600 rounded-xl text-[10px] font-black uppercase border border-rose-100 transition-all active:scale-95"
+                >
+                  <Trash2 className="w-3.5 h-3.5" /> 清空对账数据
+                </button>
               </div>
               
               <Card>
@@ -822,10 +746,7 @@ const App: React.FC = () => {
                       <tr>
                         <th className="px-6 py-5 text-[10px] font-black text-slate-500 uppercase tracking-widest">日期</th>
                         <th className="px-6 py-5 text-[10px] font-black text-indigo-600 uppercase tracking-widest">小程序订单 (A)</th>
-                        <th className="px-6 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest">微信实收</th>
-                        <th className="px-6 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest">支付宝实收</th>
-                        <th className="px-6 py-5 text-[10px] font-black text-slate-400 uppercase tracking-widest">友店/其他</th>
-                        <th className="px-6 py-5 text-[10px] font-black text-emerald-600 uppercase tracking-widest">实收汇总 (B)</th>
+                        <th className="px-6 py-5 text-[10px] font-black text-emerald-600 uppercase tracking-widest">支付流水汇总 (B)</th>
                         <th className="px-6 py-5 text-[10px] font-black text-slate-500 uppercase tracking-widest text-right">差额 (B-A)</th>
                         <th className="px-6 py-5 text-[10px] font-black text-slate-500 uppercase tracking-widest text-center">对账状态</th>
                       </tr>
@@ -835,37 +756,23 @@ const App: React.FC = () => {
                         const diff = summary.paymentTotal - summary.orderTotal;
                         const isMatched = Math.abs(diff) < 1.0;
                         return (
-                          <tr key={summary.date} className="hover:bg-slate-50/30 transition-colors group">
+                          <tr key={summary.date} className="hover:bg-slate-50/30 transition-colors">
                             <td className="px-6 py-5 text-sm font-black text-slate-700">{summary.date}</td>
                             <td className="px-6 py-5 font-black text-indigo-600">¥{summary.orderTotal.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
-                            <td className="px-6 py-5 text-slate-500 font-bold">¥{summary.wechatTotal.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
-                            <td className="px-6 py-5 text-slate-500 font-bold">¥{summary.alipayTotal.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
-                            <td className="px-6 py-5 text-slate-500 font-bold">¥{summary.youTotal.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
                             <td className="px-6 py-5 font-black text-emerald-600">¥{summary.paymentTotal.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
                             <td className={`px-6 py-5 text-right font-black tabular-nums ${isMatched ? 'text-slate-400' : diff > 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
                               {diff > 0 ? '+' : ''}{diff.toFixed(2)}
                             </td>
                             <td className="px-6 py-5 text-center">
-                              <div className={`inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${
-                                isMatched ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 'bg-rose-50 text-rose-600 border border-rose-100 animate-pulse'
+                              <div className={`inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest ${
+                                isMatched ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 'bg-rose-50 text-rose-600 border border-rose-100'
                               }`}>
-                                {isMatched ? (
-                                  <><CheckCircle2 className="w-3.5 h-3.5" /> MATCHED</>
-                                ) : (
-                                  <><XCircle className="w-3.5 h-3.5" /> ERROR</>
-                                )}
+                                {isMatched ? 'MATCHED' : 'ERROR'}
                               </div>
                             </td>
                           </tr>
                         );
                       })}
-                      {dailySummary.length === 0 && (
-                        <tr>
-                          <td colSpan={8} className="py-20 text-center text-slate-300 font-black italic">
-                            尚无对账数据，请先上传订单及支付流水
-                          </td>
-                        </tr>
-                      )}
                     </tbody>
                   </table>
                 </div>
@@ -896,9 +803,6 @@ const App: React.FC = () => {
                             </div>
                           ))
                      }
-                     {orders.filter(o=>o.category==='book').length === 0 && (
-                       <div className="text-center py-20 text-slate-300 font-bold italic">暂无书籍销售数据</div>
-                     )}
                   </div>
                </Card>
                <div className="space-y-10">
@@ -918,7 +822,7 @@ const App: React.FC = () => {
                           <label className="text-[10px] font-black uppercase text-slate-400">备注</label>
                           <input type="text" name="note" placeholder="来源备注" className="w-full p-4 bg-slate-50 rounded-2xl border-none font-bold" />
                        </div>
-                       <button className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-indigo-700 shadow-lg active:scale-95 transition-all">添加收入记录</button>
+                       <button className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs shadow-lg active:scale-95 transition-all">添加收入记录</button>
                     </form>
                   </Card>
                   <Card title="手动收入历史">
@@ -929,9 +833,6 @@ const App: React.FC = () => {
                              <span className="font-black text-violet-700 tabular-nums">¥{inc.amount.toLocaleString()}</span>
                           </div>
                         ))}
-                        {monthlyIncomes.length === 0 && (
-                          <div className="text-center py-10 text-slate-200 font-bold">暂无手动收入</div>
-                        )}
                      </div>
                   </Card>
                </div>
